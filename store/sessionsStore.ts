@@ -2,6 +2,7 @@
 // each with its own React Flow nodes/edges. Actions keep maps
 // independent per chat and limit node dragging to the top handle.
 import { create } from 'zustand';
+import { initializeNodeWithGemini, expandNodeWithGemini } from '../lib/llm';
 import type { Node, Edge } from 'reactflow';
 
 // Basic metadata for a chat session
@@ -26,6 +27,7 @@ interface SessionsState {
   addDemoNode: (label?: string) => void;
   addPreNode: (label?: string) => void;
   addInfoNode: (label?: string) => void;
+  expandSelectedNodeWithGemini: () => void;
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
@@ -109,6 +111,63 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       }
       // Limit node dragging to the top handle via `dragHandle`; mark root type
       const root: Node = { id: 'root', position: { x: 250, y: 120 }, data: { label, title: label, nodeType: 'root' }, type: 'mind', dragHandle: '.drag-handle' };
+      // Initialize the root node via Gemini: set title, add branches (post) and clarifies (info)
+      setTimeout(() => {
+        initializeNodeWithGemini({ nodeId: 'root', context: label }).then(({ title, clarifies, branches }) => {
+          set((innerState) => {
+            const innerSid = innerState.selectedId; if (!innerSid) return innerState as SessionsState;
+            const innerMap = innerState.maps[innerSid] ?? { nodes: [], edges: [] };
+            const sourceNode = innerMap.nodes.find((n) => n.id === 'root');
+            const nodesUpdated = innerMap.nodes.map((n) => n.id === 'root'
+              ? { ...n, data: { ...(n.data ?? {}), label: title, title } }
+              : n);
+            const existingIds = new Set(nodesUpdated.map((n) => n.id));
+            // Branch nodes below (post links)
+            const branchNodes = branches
+              .filter((b) => !existingIds.has(b.id))
+              .map<Node>((b, idx) => ({
+                id: b.id,
+                position: { x: (sourceNode?.position?.x ?? 250) - 120 + idx * 180, y: (sourceNode?.position?.y ?? 120) + 160 },
+                data: { label: b.label, nodeType: 'step' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              }));
+            const branchEdges = branchNodes.map<Edge>((n) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const infoNodes = clarifies
+              .filter((c) => !existingIds.has(c.id))
+              .map<Node>((c, idx) => ({
+                id: c.id,
+                position: { x: (sourceNode?.position?.x ?? 250) + 200, y: (sourceNode?.position?.y ?? 120) + (idx * 60) - 30 },
+                data: { label: c.label, nodeType: 'info' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              }));
+            const infoEdges = infoNodes.map<Edge>((n) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'info' },
+              sourceHandle: 'right',
+              targetHandle: 'left',
+              type: 'smoothstep',
+            }));
+            return {
+              maps: {
+                ...innerState.maps,
+                [innerSid]: {
+                  nodes: [...nodesUpdated, ...branchNodes, ...infoNodes],
+                  edges: [...innerMap.edges, ...branchEdges, ...infoEdges],
+                },
+              },
+            };
+          });
+        }).catch(() => {/* swallow LLM errors for non-blocking UX */});
+      }, 0);
       return { maps: { ...state.maps, [sid]: { ...map, nodes: [root] } }, selectedNodeId: 'root' };
     }),
     /**
@@ -224,6 +283,73 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
           type: 'smoothstep',
         };
         return { maps: { ...state.maps, [sid]: { nodes: [...baseNodes, newNode], edges: [...map.edges, newEdge] } } };
+      }),
+    // Expand the selected node using LLM; add branches as 'post' and clarifies as 'info' side nodes
+    expandSelectedNodeWithGemini: () =>
+      set((state) => {
+        const sid = state.selectedId;
+        if (!sid) return state as SessionsState;
+        const map = state.maps[sid] ?? { nodes: [], edges: [] };
+        const sourceId = state.selectedNodeId ?? 'root';
+        const sourceNode = map.nodes.find((n) => n.id === sourceId);
+        const contextLabel = (sourceNode?.data as any)?.label ?? (sourceNode?.data as any)?.title ?? 'Idea';
+
+        // Fire async LLM expansion and apply when ready
+        expandNodeWithGemini({ nodeId: sourceId, context: String(contextLabel) }).then(({ branches, clarifies }) => {
+          set((inner) => {
+            const innerSid = inner.selectedId; if (!innerSid) return inner as SessionsState;
+            const innerMap = inner.maps[innerSid] ?? { nodes: [], edges: [] };
+            const existingIds = new Set(innerMap.nodes.map((n) => n.id));
+
+            // Branch nodes below (post links)
+            const branchNodes = branches
+              .filter((b) => !existingIds.has(b.id))
+              .map<Node>((b, idx) => ({
+                id: b.id,
+                position: { x: (sourceNode?.position?.x ?? 250) - 120 + idx * 180, y: (sourceNode?.position?.y ?? 120) + 160 },
+                data: { label: b.label, nodeType: 'step' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              }));
+            const branchEdges = branchNodes.map<Edge>((n) => ({
+              id: `e-${sourceId}-${n.id}`,
+              source: sourceId,
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+
+            // Clarify nodes to the right (info links)
+            const clarifyNodes = clarifies
+              .filter((c) => !existingIds.has(c.id))
+              .map<Node>((c, idx) => ({
+                id: c.id,
+                position: { x: (sourceNode?.position?.x ?? 250) + 200, y: (sourceNode?.position?.y ?? 120) + (idx * 60) - 30 },
+                data: { label: c.label, nodeType: 'info' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              }));
+            const clarifyEdges = clarifyNodes.map<Edge>((n) => ({
+              id: `e-${sourceId}-${n.id}`,
+              source: sourceId,
+              target: n.id,
+              data: { linkType: 'info' },
+              sourceHandle: 'right',
+              targetHandle: 'left',
+              type: 'smoothstep',
+            }));
+
+            return {
+              maps: {
+                ...inner.maps,
+                [innerSid]: {
+                  nodes: [...innerMap.nodes, ...branchNodes, ...clarifyNodes],
+                  edges: [...innerMap.edges, ...branchEdges, ...clarifyEdges],
+                },
+              },
+            };
+          });
+        }).catch(() => state as SessionsState);
+        return state as SessionsState;
       }),
   };
 });

@@ -9,6 +9,9 @@ npm install @google/generative-ai
 
 - API route: see `app/api/llm/route.ts` — it accepts `{ prompt, messages, model, temperature }` and returns `{ text }`.
 - Client helper: use `generateText()` from `lib/llm.ts`.
+ - Configure a system prompt via `LLM_SYSTEM_PROMPT` (optional).
+ - You can also pass a per-request `systemPrompt` in the body to override.
+ - For built-in behaviors, pass `promptType: 'init' | 'expand'` to use embedded system prompts.
 
 ### Quick Example
 
@@ -17,14 +20,14 @@ import { generateText } from '@/lib/llm';
 
 const { text } = await generateText({
   prompt: 'Suggest three branches for the "Travel" node',
-  model: 'gemini-2.0-flash',
+  model: 'gemini-flash-latest',
 });
 ```
 
 ### Notes
 
-- For streaming, wire a `POST /api/llm/stream` route and consume with `streamText()` from `lib/llm.ts`.
-- Configure a system prompt via `LLM_SYSTEM_PROMPT` (optional).
+ - For streaming, wire a `POST /api/llm/stream` route and consume with `streamText()` from `lib/llm.ts`.
+ - Set `LLM_SYSTEM_PROMPT` to customize the assistant behavior.
 # Mind Map UI (Starter)
 
 Interactive choose-your-own-adventure mind map built with Next.js (App Router), React, TypeScript, React Flow, Zustand, and Tailwind CSS.

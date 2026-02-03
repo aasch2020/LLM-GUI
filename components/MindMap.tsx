@@ -1,6 +1,6 @@
 "use client";
 import React, { useCallback } from 'react';
-import ReactFlow, { Background, Controls, NodeMouseHandler, applyNodeChanges, applyEdgeChanges } from 'reactflow';
+import ReactFlow, { Background, Controls, NodeMouseHandler, applyNodeChanges, applyEdgeChanges, EdgeChange, NodeChange } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useSessionsStore } from '../store/sessionsStore';
 import MindNode from './MindNode';
@@ -64,7 +64,7 @@ const MindMap: React.FC = () => {
    * onNodesChange
    * Applies node changes (position/selection) and persists them to the store.
    */
-  const onNodesChange = useCallback((changes) => {
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
     const updated = applyNodeChanges(changes, nodes);
     setNodes(updated);
   }, [nodes, setNodes]);
@@ -74,7 +74,7 @@ const MindMap: React.FC = () => {
    * onEdgesChange
    * Applies edge changes and persists them to the store.
    */
-  const onEdgesChange = useCallback((changes) => {
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     const updated = applyEdgeChanges(changes, rawEdges);
     setEdges(updated);
   }, [rawEdges, setEdges]);
