@@ -3,6 +3,11 @@ import React from 'react';
 import { useSessionsStore } from '../store/sessionsStore';
 import { useRouter } from 'next/navigation';
 
+/**
+ * LeftSidebar
+ *
+ * Lists chat sessions with create/select actions. Navigates to `/chat/[id]` on selection.
+ */
 const LeftSidebar: React.FC = () => {
   const sessions = useSessionsStore((s) => s.sessions);
   const selectedId = useSessionsStore((s) => s.selectedId);

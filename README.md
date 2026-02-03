@@ -1,3 +1,30 @@
+## LLM Setup
+
+- Add your API key: copy `.env.example` to `.env` and set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+- Install the Gemini SDK:
+
+```bash
+npm install @google/generative-ai
+```
+
+- API route: see `app/api/llm/route.ts` — it accepts `{ prompt, messages, model, temperature }` and returns `{ text }`.
+- Client helper: use `generateText()` from `lib/llm.ts`.
+
+### Quick Example
+
+```ts
+import { generateText } from '@/lib/llm';
+
+const { text } = await generateText({
+  prompt: 'Suggest three branches for the "Travel" node',
+  model: 'gemini-2.0-flash',
+});
+```
+
+### Notes
+
+- For streaming, wire a `POST /api/llm/stream` route and consume with `streamText()` from `lib/llm.ts`.
+- Configure a system prompt via `LLM_SYSTEM_PROMPT` (optional).
 # Mind Map UI (Starter)
 
 Interactive choose-your-own-adventure mind map built with Next.js (App Router), React, TypeScript, React Flow, Zustand, and Tailwind CSS.

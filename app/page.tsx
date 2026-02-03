@@ -5,6 +5,12 @@ import StarterField from '../components/StarterField';
 import { useSessionsStore } from '../store/sessionsStore';
 import React, { useState } from 'react';
 
+/**
+ * HomePage
+ *
+ * Main entry view showing the mind map canvas, sidebar, and quick actions
+ * to add pre/post/info nodes to the currently selected node.
+ */
 export default function HomePage() {
   const addDemoNode = useSessionsStore((s) => s.addDemoNode);
   const addPreNode = useSessionsStore((s) => s.addPreNode);

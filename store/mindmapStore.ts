@@ -26,9 +26,25 @@ export const useMindMapStore = create<MindMapState>((set) => ({
   nodes: initialNodes,
   edges: initialEdges,
   selectedNodeId: null,
+  /**
+   * setNodes
+   * Replace the entire nodes array.
+   */
   setNodes: (nodes) => set({ nodes }),
+  /**
+   * setEdges
+   * Replace the entire edges array.
+   */
   setEdges: (edges) => set({ edges }),
+  /**
+   * setSelectedNodeId
+   * Update the currently selected node id.
+   */
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+  /**
+   * addDemoNode
+   * Adds a new demo node and links it from the selected node (or root).
+   */
   addDemoNode: (label = 'Demo Node') =>
     set((state) => {
       const id = `demo-${Date.now()}`;

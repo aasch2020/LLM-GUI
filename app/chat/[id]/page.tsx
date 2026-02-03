@@ -6,6 +6,13 @@ import { useSessionsStore } from '../../../store/sessionsStore';
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 
+/**
+ * ChatPage
+ *
+ * Per-session mind map view at `/chat/[id]`.
+ * Syncs the selected session id from the route and renders the mind map
+ * with actions to add pre/post/info nodes.
+ */
 export default function ChatPage() {
   const params = useParams();
   const id = Array.isArray(params.id) ? params.id[0] : (params.id ?? '');

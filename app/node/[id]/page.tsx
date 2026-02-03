@@ -9,6 +9,13 @@ import { useSessionsStore } from '../../../store/sessionsStore';
 // - Left sidebar: side info nodes rendered vertically as cards
 // - Bottom bar: outgoing (next) nodes rendered as clickable cards
 // The center shows the current node’s details.
+/**
+ * NodePage
+ *
+ * Detailed view for a single node at `/node/[id]`.
+ * Shows incoming (previous) nodes, side info, the node details with editable notes,
+ * and outgoing (next) nodes. Provides navigation back to the chat map.
+ */
 export default function NodePage() {
   const params = useParams();
   const router = useRouter();
@@ -42,6 +49,11 @@ export default function NodePage() {
   }, [initialNotes, id]);
 
   // Small clickable node card used in sidebars
+  /**
+   * NodeCard
+   *
+   * Small clickable card representing a node. Clicking navigates to the node's detail page.
+   */
   const NodeCard = ({ node }: { node: NonNullable<typeof nodes[number]> }) => (
     <button
       onClick={() => router.push(`/node/${node.id}`)}

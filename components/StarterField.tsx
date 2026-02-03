@@ -2,6 +2,12 @@
 import React, { useMemo, useState } from 'react';
 import { useSessionsStore } from '../store/sessionsStore';
 
+/**
+ * StarterField
+ *
+ * Input field to create or rename the root node for the selected session.
+ * Writes changes to the session store and provides a quick action button.
+ */
 const StarterField: React.FC = () => {
   const selectedId = useSessionsStore((s) => s.selectedId);
   const map = useSessionsStore((s) => (selectedId ? s.maps[selectedId] : undefined));
@@ -14,6 +20,10 @@ const StarterField: React.FC = () => {
     typeof root?.data?.label === 'string' ? (root?.data?.label as string) : ''
   );
 
+  /**
+   * submit
+   * Creates a root node if none exists; otherwise renames the existing root.
+   */
   const submit = () => {
     const label = (value || '').trim();
     if (!label) return;
