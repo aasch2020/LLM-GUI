@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { useSessionsStore } from '../../../store/sessionsStore';
+import MindNode from '../../../components/MindNode';
+import type { Node } from 'reactflow';
 
 // Node detail page layout:
 // - Top bar: incoming (previous) nodes rendered as clickable cards
@@ -38,6 +40,8 @@ export default function NodePage() {
   const sideInfoNodes = sideInfoIds.map(findNode).filter(Boolean) as typeof nodes;
   const currentNode = findNode(id);
   const updateNodeData = useSessionsStore((s) => s.updateNodeData);
+  const repromptRootWithClarify = useSessionsStore((s) => s.repromptRootWithClarify);
+  const expandAnswerPath = useSessionsStore((s) => s.expandAnswerPath);
 
   // Editable notes field bound to the current node's inputValue
   const initialNotes = typeof (currentNode?.data as any)?.inputValue === 'string'
@@ -48,25 +52,49 @@ export default function NodePage() {
     setNotes(initialNotes);
   }, [initialNotes, id]);
 
-  // Small clickable node card used in sidebars
-  /**
-   * NodeCard
-   *
-   * Small clickable card representing a node. Clicking navigates to the node's detail page.
-   */
-  const NodeCard = ({ node }: { node: NonNullable<typeof nodes[number]> }) => (
-    <button
-      onClick={() => router.push(`/node/${node.id}`)}
-      className="text-left w-full rounded border border-gray-200 bg-white/70 hover:bg-white transition px-3 py-2 shadow-sm"
-    >
-      <div className="text-sm font-medium text-gray-900">{node.data?.title ?? node.data?.label ?? node.id}</div>
-      {node.data?.subtitle && (
-        <div className="text-xs text-gray-600">{node.data.subtitle}</div>
-      )}
-      {typeof (node.data as any)?.inputValue === 'string' && (node.data as any).inputValue ? (
-        <div className="mt-1 text-[11px] text-gray-700 line-clamp-2">{(node.data as any).inputValue}</div>
-      ) : null}
-    </button>
+  const nodeType = (currentNode?.data as any)?.nodeType ?? 'default';
+  const nodeTitle = currentNode?.data?.title ?? currentNode?.data?.label ?? '';
+
+  const handleNotesSubmit = () => {
+    const value = notes.trim();
+    if (!value) return;
+    if (nodeType === 'root') {
+      repromptRootWithClarify(value);
+      setNotes('');
+      updateNodeData(id, { inputValue: '' });
+      return;
+    }
+    if (nodeType === 'info') {
+      const question = nodeTitle || (currentNode?.data as any)?.label;
+      repromptRootWithClarify(value, question);
+      setNotes('');
+      updateNodeData(id, { inputValue: '' });
+      return;
+    }
+    if (nodeType === 'step' || nodeType === 'pre') {
+      expandAnswerPath(id, value);
+      setNotes('');
+      updateNodeData(id, { inputValue: '' });
+      return;
+    }
+    updateNodeData(id, { details: value, inputValue: '' });
+    setNotes('');
+  };
+
+  const notesSubmitLabel =
+    nodeType === 'root'
+      ? 'Reprompt with context'
+      : nodeType === 'info'
+        ? 'Submit & reprompt'
+        : nodeType === 'step' || nodeType === 'pre'
+          ? 'Expand path'
+          : 'Update details';
+
+  // Render actual MindNode (standalone = no Handles, no drag bar) for consistent look and behavior
+  const NodeCard = ({ node }: { node: Node }) => (
+    <div className="shrink-0 cursor-pointer">
+      <MindNode id={node.id} data={node.data ?? {}} selected={false} standalone />
+    </div>
   );
 
   return (
@@ -75,11 +103,9 @@ export default function NodePage() {
       <div className="mb-4">
         <div className="text-sm font-semibold mb-2">Previous</div>
         {incomingNodes.length ? (
-          <div className="flex gap-3 overflow-x-auto pb-1">
+          <div className="flex gap-4 overflow-x-auto pb-1">
             {incomingNodes.map((n) => (
-              <div key={n.id} className="min-w-[200px]">
-                <NodeCard node={n} />
-              </div>
+              <NodeCard key={n.id} node={n} />
             ))}
           </div>
         ) : (
@@ -89,11 +115,11 @@ export default function NodePage() {
 
       {/* Middle: left sidebar for side info, main content for current node */}
       <div className="flex gap-6">
-        {/* Left sidebar: side info */}
-        <aside className="w-64 shrink-0">
+        {/* Left sidebar: side info - actual MindNode components */}
+        <aside className="shrink-0">
           <div className="text-sm font-semibold mb-2">Side Info</div>
           {sideInfoNodes.length ? (
-            <div className="space-y-2">
+            <div className="space-y-4 flex flex-col">
               {sideInfoNodes.map((n) => (
                 <NodeCard key={n.id} node={n} />
               ))}
@@ -107,8 +133,8 @@ export default function NodePage() {
         <section className="flex-1">
           <div className="rounded border border-gray-200 bg-white px-4 py-3 shadow">
             <div className="text-xl font-semibold text-gray-900">{currentNode?.data?.title ?? labelFor(id)}</div>
-            {currentNode?.data?.subtitle && (
-              <div className="text-sm text-gray-700 mt-1">{currentNode.data.subtitle}</div>
+            {currentNode?.data?.content && (
+              <div className="text-sm text-gray-700 mt-1">{currentNode.data.content}</div>
             )}
             {currentNode?.data && (
               <div className="mt-3 text-sm text-gray-800">
@@ -118,13 +144,29 @@ export default function NodePage() {
                 </div>
                 <div className="mt-3">
                   <div className="text-gray-600">Notes:</div>
-                  <textarea
-                    className="mt-1 w-full min-h-[100px] rounded border border-gray-300 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Type notes or ideas…"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    onBlur={() => updateNodeData(id, { inputValue: notes })}
-                  />
+                  <div className="mt-1 flex gap-2">
+                    <textarea
+                      className="flex-1 min-w-0 min-h-[100px] rounded border border-gray-300 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Type notes or ideas…"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      onBlur={() => updateNodeData(id, { inputValue: notes })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleNotesSubmit();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleNotesSubmit}
+                      className="shrink-0 self-end rounded bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400 border border-blue-500 h-[36px]"
+                      aria-label={notesSubmitLabel}
+                    >
+                      {notesSubmitLabel}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -135,15 +177,13 @@ export default function NodePage() {
         </section>
       </div>
 
-      {/* Bottom bar: outgoing/next nodes */}
+      {/* Bottom bar: outgoing/next nodes - actual MindNode components */}
       <div className="mt-6">
         <div className="text-sm font-semibold mb-2">Next</div>
         {outgoingNodes.length ? (
-          <div className="flex gap-3 overflow-x-auto pb-1">
+          <div className="flex gap-4 overflow-x-auto pb-1">
             {outgoingNodes.map((n) => (
-              <div key={n.id} className="min-w-[200px]">
-                <NodeCard node={n} />
-              </div>
+              <NodeCard key={n.id} node={n} />
             ))}
           </div>
         ) : (

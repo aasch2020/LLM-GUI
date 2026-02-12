@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import ReactFlow, { Background, Controls, NodeMouseHandler, applyNodeChanges, applyEdgeChanges, EdgeChange, NodeChange } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useSessionsStore } from '../store/sessionsStore';
@@ -20,14 +20,28 @@ const MindMap: React.FC = () => {
 
   
   const selectedId = useSessionsStore((s) => s.selectedId);
+  const selectedNodeId = useSessionsStore((s) => s.selectedNodeId);
   const maps = useSessionsStore((s) => s.maps);
   const setSelectedNodeId = useSessionsStore((s) => s.setSelectedNodeId);
   const setNodes = useSessionsStore((s) => s.setNodes);
   const setEdges = useSessionsStore((s) => s.setEdges);
   const router = useRouter();
 
-  const nodes = selectedId ? maps[selectedId]?.nodes ?? [] : [];
+  const rawNodes = selectedId ? maps[selectedId]?.nodes ?? [] : [];
   const rawEdges = selectedId ? maps[selectedId]?.edges ?? [] : [];
+  const ignoreNextSelectionChangeRef = useRef(false);
+
+  const nodes = useMemo(
+    () => rawNodes.map((n) => ({ ...n, selected: n.id === selectedNodeId })),
+    [rawNodes, selectedNodeId]
+  );
+
+  // When selection was set by store (e.g. after reprompt), ignore the next onSelectionChange to avoid loop
+  const prevSelectedNodeIdRef = useRef(selectedNodeId);
+  if (prevSelectedNodeIdRef.current !== selectedNodeId) {
+    prevSelectedNodeIdRef.current = selectedNodeId;
+    ignoreNextSelectionChangeRef.current = true;
+  }
 
   // Select a node unless the click originates from an interactive element
   /**
@@ -59,41 +73,40 @@ const MindMap: React.FC = () => {
    */
   const onPaneClick = useCallback(() => setSelectedNodeId(null), [setSelectedNodeId]);
 
-  // Persist node changes (position/size/selection) into the store
-  /**
-   * onNodesChange
-   * Applies node changes (position/selection) and persists them to the store.
-   */
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
-    const updated = applyNodeChanges(changes, nodes);
-    setNodes(updated);
-  }, [nodes, setNodes]);
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
 
-  // Persist edge changes into the store
-  /**
-   * onEdgesChange
-   * Applies edge changes and persists them to the store.
-   */
+  // Persist node changes (position/size) into the store. Use ref for nodes to avoid callback identity changes triggering more changes.
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    const nonSelectionChanges = changes.filter((change) => change.type !== 'select');
+    if (nonSelectionChanges.length === 0) return;
+    const updated = applyNodeChanges(nonSelectionChanges, nodesRef.current);
+    setNodes(updated);
+  }, [setNodes]);
+
+  const rawEdgesRef = useRef(rawEdges);
+  rawEdgesRef.current = rawEdges;
+
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    const updated = applyEdgeChanges(changes, rawEdges);
+    const updated = applyEdgeChanges(changes, rawEdgesRef.current);
     setEdges(updated);
-  }, [rawEdges, setEdges]);
+  }, [setEdges]);
 
   // Keep store selection in sync with React Flow's selection state
-  /**
-   * onSelectionChange
-   * Syncs the store's selected node id with React Flow's selection state.
-   */
   const onSelectionChange = useCallback((params: { nodes: Array<{ id: string }> }) => {
+    if (ignoreNextSelectionChangeRef.current) {
+      ignoreNextSelectionChangeRef.current = false;
+      return;
+    }
     const first = params?.nodes?.[0]?.id ?? null;
-    if (first !== selectedId) setSelectedNodeId(first);
-  }, [selectedId, setSelectedNodeId]);
+    setSelectedNodeId(first);
+  }, [setSelectedNodeId]);
 
   // Memoize nodeTypes so the reference stays stable per render
   // nodeTypes provided from module scope (stable reference)
 
   // Style edges by semantic link type: info (orange dashed), pre (gray), post (blue)
-  const edges = rawEdges.map((e) => {
+  const edges = useMemo(() => rawEdges.map((e) => {
     const t = e.data?.linkType as 'pre' | 'post' | 'info' | undefined;
     const style = t === 'info'
       ? { stroke: '#f59e0b', strokeDasharray: '4 2' }
@@ -101,7 +114,7 @@ const MindMap: React.FC = () => {
       ? { stroke: '#6b7280' }
       : { stroke: '#2563eb' };
     return { ...e, style };
-  });
+  }), [rawEdges]);
 
   return (
     <div className="w-full h-[70vh]">

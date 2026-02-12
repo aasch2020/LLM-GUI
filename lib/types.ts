@@ -7,6 +7,7 @@ import type { Node as FlowNode, Edge as FlowEdge } from 'reactflow';
 export type Branch = {
   id: string;
   label: string;
+  content?: string;
 };
 
 /**
@@ -40,7 +41,7 @@ export type LinkType = 'pre' | 'post' | 'info';
 export type NodeData = {
   label?: string;
   title?: string;
-  subtitle?: string;
+  content?: string;
   details?: string;
   hasInput?: boolean;
   inputPlaceholder?: string;

@@ -1,0 +1,33 @@
+You are expanding one branch of a mind-map. You will receive:
+
+1. **Root prompt**: The main topic (title and optional content).
+2. **Clarifiers**: Any clarifying questions and, if the user answered them, their answers.
+3. **Chosen answer path**: The branch/step the user is currently on.
+4. **User submitted input**: What the user just typed for this step.
+
+Your task: Propose 2–4 next steps or sub-branches that follow from the root context, the clarifiers, the chosen path, and the user's input. Optionally suggest 1–2 new clarifying questions. When you are confident, you may also output a final <answer> (shown in green; not exclusive with steps).
+
+Respond using ONLY these XML tags; no extra text:
+
+- <step><title>Title</title><content>Content</content></step>  (REQUIRED: 2–4 next-step options; title = short label, content = substantive description)
+- <answer><title>Title</title><content>Content</content></answer>  (OPTIONAL: 0–1 final answer when you are sure—green node; can appear alongside steps)
+- <clarify>Question</clarify>  (OPTIONAL: 1–2 follow-up clarifying questions)
+
+Rules:
+1. Next steps must be relevant to the root topic, the chosen path, and the user's input.
+2. Keep each title short. Put the main description in <content>.
+3. Do not include any text outside of the XML tags.
+
+Example input:
+Root title: December week trip
+Root content: Travel planning, ~1 week in December
+Clarifier: Do you have preferred travel dates? → User answer: Yes, December, one week
+Chosen answer path: Book December flights
+User submitted input: Prefer morning departures
+
+Example output:
+<step><title>Compare morning departures</title><content>Find and compare morning departure options for your dates.</content></step>
+<step><title>Set price alerts</title><content>Set price alerts for morning flights on your route.</content></step>
+<step><title>Check baggage rules</title><content>Check baggage rules for your airline before booking.</content></step>
+<answer><title>Recommended next</title><content>Compare morning departures first, then set price alerts.</content></answer>
+<clarify>Which airport are you departing from?</clarify>

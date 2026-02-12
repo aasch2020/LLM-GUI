@@ -38,16 +38,26 @@ export async function POST(req: Request) {
     // Read local prompt files from /prompts and use them as system prompts
     const initPromptPath = path.join(process.cwd(), "prompts", "init-prompt.txt");
     const basePromptPath = path.join(process.cwd(), "prompts", "base-systemprompt.txt");
+    const clarifyPromptPath = path.join(process.cwd(), "prompts", "clarify-reprompt.txt");
+    const answerPathPromptPath = path.join(process.cwd(), "prompts", "answer-path-prompt.txt");
     let initPromptContent = "";
     let basePromptContent = "";
+    let clarifyPromptContent = "";
+    let answerPathPromptContent = "";
     try { initPromptContent = (await fs.readFile(initPromptPath, "utf-8")).trim(); } catch { initPromptContent = ""; }
     try { basePromptContent = (await fs.readFile(basePromptPath, "utf-8")).trim(); } catch { basePromptContent = ""; }
+    try { clarifyPromptContent = (await fs.readFile(clarifyPromptPath, "utf-8")).trim(); } catch { clarifyPromptContent = ""; }
+    try { answerPathPromptContent = (await fs.readFile(answerPathPromptPath, "utf-8")).trim(); } catch { answerPathPromptContent = ""; }
 
     const defaultSys = "You are a helpful assistant.";
     const envSys = process.env.LLM_SYSTEM_PROMPT ?? defaultSys;
     let sys: string = envSys;
     if (promptType === "init" && initPromptContent.length > 0) {
       sys = initPromptContent;
+    } else if (promptType === "clarify" && clarifyPromptContent.length > 0) {
+      sys = clarifyPromptContent;
+    } else if (promptType === "answerPath" && answerPathPromptContent.length > 0) {
+      sys = answerPathPromptContent;
     } else if (promptType === "expand" && basePromptContent.length > 0) {
       sys = basePromptContent;
     } else if (basePromptContent.length > 0) {
@@ -81,6 +91,11 @@ export async function POST(req: Request) {
       });
     }
 
+    const userContent = typeof prompt === "string" ? prompt : JSON.stringify(messages);
+    console.log("[LLM] promptType", promptType);
+    console.log("[LLM] system prompt length", sys?.length ?? 0);
+    console.log("[LLM] user prompt/request", userContent);
+
     const useModel = String(model ?? "gemini-flash-latest");
     const temperatureValue = typeof temperature === "number" ? temperature : 0.2;
 
@@ -89,40 +104,62 @@ export async function POST(req: Request) {
       systemInstruction,
     });
     let text = "";
-    // try {
-    //   const result = await geminiModel.generateContent({
-    //     contents,
-    //     generationConfig: { temperature: temperatureValue },
-    //   });
-    //   text = result.response?.text() ?? "";
-    // } catch {
-    //   text = "";
-    // }
+    try {
+      const result = await geminiModel.generateContent({
+        contents,
+        generationConfig: { temperature: temperatureValue },
+      });
+      text = result.response?.text() ?? "";
+    } catch (err) {
+      console.warn("[LLM] Gemini error, using fallback", err);
+      text = "";
+    }
 
-    if (!text || text.trim().length === 0) {
+    const usedFallback = !text || text.trim().length === 0;
+    if (usedFallback) {
+      console.log("[LLM] using boilerplate fallback (no Gemini response)");
       if (promptType === "expand") {
         text = [
-          "<answer>Option A</answer>",
-          "<answer>Option B</answer>",
-          "<answer>Option C</answer>",
+          "<step><title>Option A</title><content>First option.</content></step>",
+          "<step><title>Option B</title><content>Second option.</content></step>",
+          "<answer><title>Suggested</title><content>When confident, a final answer.</content></answer>",
           "<clarify>Would you like more branches or details?</clarify>",
         ].join("\n");
       } else if (promptType === "init") {
         text = [
-          "<root>startit</root>",
-          "<answer>First branch</answer>",
-          "<answer>Second branch</answer>",
+          "<root><title>Get started</title><content>Refined from your idea</content></root>",
+          "<step><title>First step</title><content>First step description.</content></step>",
+          "<step><title>Second step</title><content>Second step description.</content></step>",
+          "<answer><title>Direct answer</title><content>When confident, a final answer option.</content></answer>",
           "<clarify>Any constraints or preferences?</clarify>",
+        ].join("\n");
+      } else if (promptType === "answerPath") {
+        text = [
+          "<step><title>Next step A</title><content>Content for first option.</content></step>",
+          "<step><title>Next step B</title><content>Content for second option.</content></step>",
+          "<answer><title>Final answer</title><content>Confident conclusion when applicable.</content></answer>",
+          "<clarify>Need more detail?</clarify>",
+        ].join("\n");
+      } else if (promptType === "clarify") {
+        text = [
+          "<root><title>Refined topic</title><content>With your context applied</content></root>",
+          "<step><title>Option A</title><content>Description for option A.</content></step>",
+          "<step><title>Option B</title><content>Description for option B.</content></step>",
+          "<answer><title>Recommended</title><content>Best fit when sure.</content></answer>",
+          "<clarify>Need more detail?</clarify>",
         ].join("\n");
       } else {
         text = [
-          "<answer>Option 1</answer>",
-          "<answer>Option 2</answer>",
+          "<step><title>Option 1</title><content>First option.</content></step>",
+          "<step><title>Option 2</title><content>Second option.</content></step>",
+          "<answer><title>Suggested</title><content>When confident.</content></answer>",
           "<clarify>Want more details?</clarify>",
         ].join("\n");
       }
+    } else {
+      console.log("[LLM] response from real Gemini");
     }
-    console.log("responded wtih " + text)
+    console.log("[LLM] response", text);
     return new Response(JSON.stringify({ text }), {
       status: 200,
       headers: { "Content-Type": "application/json" },

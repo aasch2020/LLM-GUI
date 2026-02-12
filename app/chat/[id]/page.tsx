@@ -23,6 +23,7 @@ export default function ChatPage() {
   const addInfoNode = useSessionsStore((s) => s.addInfoNode);
   const maps = useSessionsStore((s) => s.maps);
   const selectedNodeId = useSessionsStore((s) => s.selectedNodeId);
+  const promptLoading = useSessionsStore((s) => s.promptLoading);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
@@ -84,7 +85,19 @@ export default function ChatPage() {
             <LeftSidebar />
           </div>
         )}
-        <div className={sidebarOpen ? 'lg:col-span-3' : 'lg:col-span-4'}>
+        <div className={`relative ${sidebarOpen ? 'lg:col-span-3' : 'lg:col-span-4'}`}>
+          {promptLoading && (
+            <div
+              className="absolute inset-0 z-10 flex items-center justify-center bg-white/90 dark:bg-gray-900/90 rounded-lg"
+              aria-busy="true"
+              aria-live="polite"
+            >
+              <div className="flex flex-col items-center gap-3">
+                <div className="h-10 w-10 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
+                <span className="text-sm text-gray-600 dark:text-gray-400">Updating map…</span>
+              </div>
+            </div>
+          )}
           <MindMap />
         </div>
       </div>

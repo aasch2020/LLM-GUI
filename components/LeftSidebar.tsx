@@ -1,6 +1,7 @@
 "use client";
 import React from 'react';
 import { useSessionsStore } from '../store/sessionsStore';
+import { useLlmSettingsStore } from '../store/llmSettingsStore';
 import { useRouter } from 'next/navigation';
 
 /**
@@ -14,6 +15,8 @@ const LeftSidebar: React.FC = () => {
   const createSession = useSessionsStore((s) => s.createSession);
   const selectSession = useSessionsStore((s) => s.selectSession);
   const router = useRouter();
+  const useMockLlm = useLlmSettingsStore((s) => s.useMockLlm);
+  const setUseMockLlm = useLlmSettingsStore((s) => s.setUseMockLlm);
 
   return (
     <aside className="h-full flex flex-col bg-white border border-gray-200 rounded p-3 w-full">
@@ -49,6 +52,20 @@ const LeftSidebar: React.FC = () => {
         {sessions.length === 0 && (
           <div className="text-xs text-gray-500">No chats yet.</div>
         )}
+      </div>
+      <div className="mt-3 pt-3 border-t border-gray-200">
+        <label className="flex items-center gap-2 cursor-pointer text-xs">
+          <input
+            type="checkbox"
+            checked={useMockLlm}
+            onChange={(e) => setUseMockLlm(e.target.checked)}
+            className="rounded border-gray-300"
+          />
+          <span>Use mock LLM</span>
+        </label>
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {useMockLlm ? 'Hardcoded responses' : 'Real API'}
+        </p>
       </div>
     </aside>
   );

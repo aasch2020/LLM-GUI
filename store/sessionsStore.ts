@@ -2,7 +2,8 @@
 // each with its own React Flow nodes/edges. Actions keep maps
 // independent per chat and limit node dragging to the top handle.
 import { create } from 'zustand';
-import { initializeNodeWithGemini, expandNodeWithGemini } from '../lib/llm';
+import { initializeNodeWithGemini, expandNodeWithGemini, repromptRootWithClarify, expandAnswerPathWithGemini } from '../lib/llm';
+import type { Branch } from '../lib/types';
 import type { Node, Edge } from 'reactflow';
 
 // Basic metadata for a chat session
@@ -20,6 +21,7 @@ interface SessionsState {
   selectedId: string | null;
   maps: Record<string, MapData>;
   selectedNodeId: string | null;
+  promptLoading: boolean;
   createSession: (title?: string) => string;
   selectSession: (id: string) => void;
   setSelectedNodeId: (id: string | null) => void;
@@ -28,6 +30,8 @@ interface SessionsState {
   addPreNode: (label?: string) => void;
   addInfoNode: (label?: string) => void;
   expandSelectedNodeWithGemini: () => void;
+  repromptRootWithClarify: (userAnswer: string, clarifyingQuestion?: string) => void;
+  expandAnswerPath: (nodeId: string, userInput: string) => Promise<void> | void;
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
@@ -37,6 +41,69 @@ interface SessionsState {
 // New sessions start with empty maps
 const defaultNodes: Node[] = [];
 const defaultEdges: Edge[] = [];
+
+// Layout: spread nodes (branch spacing, vertical offset, info offset)
+const LAYOUT = {
+  branchOffsetX: -240,
+  branchSpacingX: 360,
+  branchDy: 280,
+  infoOffsetX: 400,
+  infoSpacingY: 100,
+  infoOffsetY: -50,
+} as const;
+
+// Approximate node size for overlap / push-away
+const NODE_WIDTH = 320;
+const NODE_HEIGHT = 120;
+const EXPANSION_PADDING = 48;
+
+/**
+ * Shift existing nodes that overlap the expansion region so they sit outside it.
+ * Expansion region = bounds of step node + new branch + clarify nodes (with padding).
+ * Pushes each overlapping node away from the expansion center along the axis that resolves overlap.
+ */
+function pushNodesAwayFromExpansion(
+  existingNodes: Node[],
+  expansionNodes: Node[],
+  excludeIds: Set<string>
+): Node[] {
+  if (expansionNodes.length === 0) return existingNodes;
+  const minX = Math.min(...expansionNodes.map((n) => n.position.x)) - EXPANSION_PADDING;
+  const maxX = Math.max(...expansionNodes.map((n) => n.position.x)) + NODE_WIDTH + EXPANSION_PADDING;
+  const minY = Math.min(...expansionNodes.map((n) => n.position.y)) - EXPANSION_PADDING;
+  const maxY = Math.max(...expansionNodes.map((n) => n.position.y)) + NODE_HEIGHT + EXPANSION_PADDING;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  return existingNodes.map((n) => {
+    if (excludeIds.has(n.id)) return n;
+    const nx = n.position.x;
+    const ny = n.position.y;
+    const nRight = nx + NODE_WIDTH;
+    const nBottom = ny + NODE_HEIGHT;
+    const overlapLeft = nRight - minX;
+    const overlapRight = maxX - nx;
+    const overlapTop = nBottom - minY;
+    const overlapBottom = maxY - ny;
+    const overlapsX = overlapLeft > 0 && overlapRight > 0;
+    const overlapsY = overlapTop > 0 && overlapBottom > 0;
+    if (!overlapsX && !overlapsY) return n;
+
+    let dx = 0;
+    let dy = 0;
+    if (overlapsX) {
+      const pushLeft = overlapLeft;
+      const pushRight = overlapRight;
+      dx = nx < cx ? -pushLeft : pushRight;
+    }
+    if (overlapsY) {
+      const pushUp = overlapTop;
+      const pushDown = overlapBottom;
+      dy = ny < cy ? -pushUp : pushDown;
+    }
+    return { ...n, position: { x: nx + dx, y: ny + dy } };
+  });
+}
 
 // Create a new session id + metadata
 /**
@@ -53,6 +120,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     selectedId: initial.id,
     maps: { [initial.id]: { nodes: defaultNodes, edges: defaultEdges } },
     selectedNodeId: null,
+    promptLoading: false,
     /**
      * createSession
      * Creates a new chat session, selects it, and initializes its map.
@@ -113,60 +181,93 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       const root: Node = { id: 'root', position: { x: 250, y: 120 }, data: { label, title: label, nodeType: 'root' }, type: 'mind', dragHandle: '.drag-handle' };
       // Initialize the root node via Gemini: set title, add branches (post) and clarifies (info)
       setTimeout(() => {
-        initializeNodeWithGemini({ nodeId: 'root', context: label }).then(({ title, clarifies, branches }) => {
+        set({ promptLoading: true });
+        initializeNodeWithGemini({ nodeId: 'root', context: label }).then(({ title, content, clarifies, branches, answers = [] }) => {
           set((innerState) => {
             const innerSid = innerState.selectedId; if (!innerSid) return innerState as SessionsState;
             const innerMap = innerState.maps[innerSid] ?? { nodes: [], edges: [] };
             const sourceNode = innerMap.nodes.find((n) => n.id === 'root');
             const nodesUpdated = innerMap.nodes.map((n) => n.id === 'root'
-              ? { ...n, data: { ...(n.data ?? {}), label: title, title } }
+              ? { ...n, data: { ...(n.data ?? {}), label: title, title, ...(content != null ? { content } : {}) } }
               : n);
             const existingIds = new Set(nodesUpdated.map((n) => n.id));
-            // Branch nodes below (post links)
+            const sx = sourceNode?.position?.x ?? 250;
+            const sy = sourceNode?.position?.y ?? 120;
+            // Step nodes below (post links)
             const branchNodes = branches
               .filter((b) => !existingIds.has(b.id))
               .map<Node>((b, idx) => ({
                 id: b.id,
-                position: { x: (sourceNode?.position?.x ?? 250) - 120 + idx * 180, y: (sourceNode?.position?.y ?? 120) + 160 },
-                data: { label: b.label, nodeType: 'step' },
+                position: {
+                  x: sx + LAYOUT.branchOffsetX + idx * LAYOUT.branchSpacingX,
+                  y: sy + LAYOUT.branchDy,
+                },
+                data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'step' },
                 type: 'mind',
                 dragHandle: '.drag-handle',
               }));
+            const stepCount = branchNodes.length;
+            const answerNodes = (answers as Branch[]).filter((b) => !existingIds.has(b.id)).map<Node>((b, idx) => ({
+              id: b.id,
+              position: {
+                x: sx + LAYOUT.branchOffsetX + (stepCount + idx) * LAYOUT.branchSpacingX,
+                y: sy + LAYOUT.branchDy,
+              },
+              data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'answer' },
+              type: 'mind',
+              dragHandle: '.drag-handle',
+            }));
             const branchEdges = branchNodes.map<Edge>((n) => ({
               id: `e-root-${n.id}`,
               source: 'root',
               target: n.id,
               data: { linkType: 'post' },
             }));
-            const infoNodes = clarifies
-              .filter((c) => !existingIds.has(c.id))
-              .map<Node>((c, idx) => ({
+            const answerEdges = answerNodes.map<Edge>((n) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const infoArr = clarifies.filter((c) => !existingIds.has(c.id));
+            const infoMid = Math.ceil(infoArr.length / 2);
+            const infoNodes = infoArr.map<Node>((c, idx) => {
+              const isLeft = idx < infoMid;
+              const sx = sourceNode?.position?.x ?? 250;
+              const sy = sourceNode?.position?.y ?? 120;
+              const rowIdx = isLeft ? idx : idx - infoMid;
+              return {
                 id: c.id,
-                position: { x: (sourceNode?.position?.x ?? 250) + 200, y: (sourceNode?.position?.y ?? 120) + (idx * 60) - 30 },
+                position: {
+                  x: sx + (isLeft ? -LAYOUT.infoOffsetX : LAYOUT.infoOffsetX),
+                  y: sy + rowIdx * LAYOUT.infoSpacingY + LAYOUT.infoOffsetY,
+                },
                 data: { label: c.label, nodeType: 'info' },
                 type: 'mind',
                 dragHandle: '.drag-handle',
-              }));
-            const infoEdges = infoNodes.map<Edge>((n) => ({
+              };
+            });
+            const infoEdges = infoNodes.map<Edge>((n, i) => ({
               id: `e-root-${n.id}`,
               source: 'root',
               target: n.id,
               data: { linkType: 'info' },
-              sourceHandle: 'right',
-              targetHandle: 'left',
+              sourceHandle: i < infoMid ? 'left' : 'rightSource',
+              targetHandle: i < infoMid ? 'right' : 'leftTarget',
               type: 'smoothstep',
             }));
             return {
               maps: {
                 ...innerState.maps,
                 [innerSid]: {
-                  nodes: [...nodesUpdated, ...branchNodes, ...infoNodes],
-                  edges: [...innerMap.edges, ...branchEdges, ...infoEdges],
+                  nodes: [...nodesUpdated, ...branchNodes, ...answerNodes, ...infoNodes],
+                  edges: [...innerMap.edges, ...branchEdges, ...answerEdges, ...infoEdges],
                 },
               },
+              promptLoading: false,
             };
           });
-        }).catch(() => {/* swallow LLM errors for non-blocking UX */});
+        }).catch(() => set({ promptLoading: false }));
       }, 0);
       return { maps: { ...state.maps, [sid]: { ...map, nodes: [root] } }, selectedNodeId: 'root' };
     }),
@@ -278,12 +379,255 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
           source: sourceId,
           target: id,
           data: { linkType: 'info' },
-          sourceHandle: 'right',
-          targetHandle: 'left',
+          sourceHandle: 'rightSource',
+          targetHandle: 'leftTarget',
           type: 'smoothstep',
         };
         return { maps: { ...state.maps, [sid]: { nodes: [...baseNodes, newNode], edges: [...map.edges, newEdge] } } };
       }),
+    /**
+     * repromptRootWithClarify
+     * Sends the root's current title/content and the user's clarification text to the LLM,
+     * then updates the root and replaces all child nodes with the new branches and clarifies.
+     */
+    repromptRootWithClarify: (userAnswer, clarifyingQuestion) => {
+      const state = get();
+      const sid = state.selectedId;
+      if (!sid) return;
+      const map = state.maps[sid] ?? { nodes: [], edges: [] };
+      const rootNode = map.nodes.find((n) => n.id === 'root');
+      if (!rootNode) return;
+      const rootTitle = (rootNode.data as any)?.title ?? (rootNode.data as any)?.label ?? 'Root';
+      const rootContent = (rootNode.data as any)?.content;
+      const rootPosition = rootNode.position ?? { x: 250, y: 120 };
+
+      set({ promptLoading: true });
+      repromptRootWithClarify({ rootTitle, rootContent, clarifyingQuestion, userAnswer })
+        .then(({ title, content, branches, answers = [], clarifies }) => {
+          set((innerState) => {
+            const innerSid = innerState.selectedId;
+            if (!innerSid) return innerState as SessionsState;
+            const innerMap = innerState.maps[innerSid] ?? { nodes: [], edges: [] };
+            const updatedRoot: Node = {
+              ...rootNode,
+              position: rootPosition,
+              data: { ...(rootNode.data ?? {}), label: title, title, content, nodeType: 'root' },
+            };
+            const branchNodes = branches.map<Node>((b, idx) => ({
+              id: b.id,
+              position: {
+                x: rootPosition.x + LAYOUT.branchOffsetX + idx * LAYOUT.branchSpacingX,
+                y: rootPosition.y + LAYOUT.branchDy,
+              },
+              data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'step' },
+              type: 'mind',
+              dragHandle: '.drag-handle',
+            }));
+            const stepCount = branchNodes.length;
+            const answerNodes = (answers as Branch[]).map<Node>((b, idx) => ({
+              id: b.id,
+              position: {
+                x: rootPosition.x + LAYOUT.branchOffsetX + (stepCount + idx) * LAYOUT.branchSpacingX,
+                y: rootPosition.y + LAYOUT.branchDy,
+              },
+              data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'answer' },
+              type: 'mind',
+              dragHandle: '.drag-handle',
+            }));
+            const branchEdges = branchNodes.map<Edge>((n) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const answerEdges = answerNodes.map<Edge>((n) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const infoMid = Math.ceil(clarifies.length / 2);
+            const infoNodes = clarifies.map<Node>((c, idx) => {
+              const isLeft = idx < infoMid;
+              const rowIdx = isLeft ? idx : idx - infoMid;
+              return {
+                id: c.id,
+                position: {
+                  x: rootPosition.x + (isLeft ? -LAYOUT.infoOffsetX : LAYOUT.infoOffsetX),
+                  y: rootPosition.y + rowIdx * LAYOUT.infoSpacingY + LAYOUT.infoOffsetY,
+                },
+                data: { label: c.label, nodeType: 'info' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              };
+            });
+            const infoEdges = infoNodes.map<Edge>((n, i) => ({
+              id: `e-root-${n.id}`,
+              source: 'root',
+              target: n.id,
+              data: { linkType: 'info' },
+              sourceHandle: i < infoMid ? 'left' : 'rightSource',
+              targetHandle: i < infoMid ? 'right' : 'leftTarget',
+              type: 'smoothstep',
+            }));
+            return {
+              maps: {
+                ...innerState.maps,
+                [innerSid]: {
+                  nodes: [updatedRoot, ...branchNodes, ...answerNodes, ...infoNodes],
+                  edges: [...branchEdges, ...answerEdges, ...infoEdges],
+                },
+              },
+              selectedNodeId: 'root',
+              promptLoading: false,
+            };
+          });
+        })
+        .catch(() => set({ promptLoading: false }));
+    },
+
+    /**
+     * expandAnswerPath
+     * Prompts the LLM with root, clarifiers, the chosen step path, and user input;
+     * adds returned branches and clarifies as children of the step node, and saves user input to details.
+     */
+    expandAnswerPath: (nodeId, userInput) => {
+      const state = get();
+      const sid = state.selectedId;
+      if (!sid) return;
+      const map = state.maps[sid] ?? { nodes: [], edges: [] };
+      const rootNode = map.nodes.find((n) => n.id === 'root');
+      const sourceNode = map.nodes.find((n) => n.id === nodeId);
+      if (!rootNode || !sourceNode) return;
+
+      const rootTitle = (rootNode.data as any)?.title ?? (rootNode.data as any)?.label ?? 'Root';
+      const rootContent = (rootNode.data as any)?.content;
+      const clarifierTargetIds = map.edges
+        .filter((e) => e.source === 'root' && (e.data as any)?.linkType === 'info')
+        .map((e) => e.target);
+      const clarifiers = clarifierTargetIds.map((targetId) => {
+        const node = map.nodes.find((n) => n.id === targetId);
+        const question = (node?.data as any)?.label ?? (node?.data as any)?.title ?? '';
+        const answer = (node?.data as any)?.details ?? (node?.data as any)?.inputValue;
+        return { question, answer };
+      }).filter((c) => c.question);
+      const chosenPath = (sourceNode.data as any)?.label ?? (sourceNode.data as any)?.title ?? 'Step';
+
+      set({ promptLoading: true });
+      return expandAnswerPathWithGemini({
+        rootTitle,
+        rootContent,
+        clarifiers,
+        chosenPath,
+        userInput,
+        nodeId,
+      })
+        .then(({ branches, answers = [], clarifies }) => {
+          set((innerState) => {
+            const innerSid = innerState.selectedId;
+            if (!innerSid) return innerState as SessionsState;
+            const innerMap = innerState.maps[innerSid] ?? { nodes: [], edges: [] };
+            const existingIds = new Set(innerMap.nodes.map((n) => n.id));
+            const source = innerMap.nodes.find((n) => n.id === nodeId);
+            const pos = source?.position ?? { x: 250, y: 120 };
+
+            const nodesUpdated = innerMap.nodes.map((n) =>
+              n.id === nodeId
+                ? { ...n, data: { ...(n.data ?? {}), details: userInput, inputValue: '' } }
+                : n
+            );
+            const branchNodes = branches
+              .filter((b) => !existingIds.has(b.id))
+              .map<Node>((b, idx) => ({
+                id: b.id,
+                position: {
+                  x: pos.x + LAYOUT.branchOffsetX + idx * LAYOUT.branchSpacingX,
+                  y: pos.y + LAYOUT.branchDy,
+                },
+                data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'step' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              }));
+            const stepCount = branchNodes.length;
+            const answerNodes = (answers as Branch[]).filter((b) => !existingIds.has(b.id)).map<Node>((b, idx) => ({
+              id: b.id,
+              position: {
+                x: pos.x + LAYOUT.branchOffsetX + (stepCount + idx) * LAYOUT.branchSpacingX,
+                y: pos.y + LAYOUT.branchDy,
+              },
+              data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'answer' },
+              type: 'mind',
+              dragHandle: '.drag-handle',
+            }));
+            const branchEdges = branchNodes.map<Edge>((n) => ({
+              id: `e-${nodeId}-${n.id}`,
+              source: nodeId,
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const answerEdges = answerNodes.map<Edge>((n) => ({
+              id: `e-${nodeId}-${n.id}`,
+              source: nodeId,
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
+            const allNewIds = new Set([...nodesUpdated.map((n) => n.id), ...branchNodes.map((n) => n.id), ...answerNodes.map((n) => n.id)]);
+            const clarifyList = clarifies.filter((c) => !allNewIds.has(c.id));
+            const clarifyMid = Math.ceil(clarifyList.length / 2);
+            const clarifyNodes = clarifyList.map<Node>((c, idx) => {
+              const isLeft = idx < clarifyMid;
+              const rowIdx = isLeft ? idx : idx - clarifyMid;
+              return {
+                id: c.id,
+                position: {
+                  x: pos.x + (isLeft ? -LAYOUT.infoOffsetX : LAYOUT.infoOffsetX),
+                  y: pos.y + rowIdx * LAYOUT.infoSpacingY + LAYOUT.infoOffsetY,
+                },
+                data: { label: c.label, nodeType: 'info' },
+                type: 'mind',
+                dragHandle: '.drag-handle',
+              };
+            });
+            const clarifyEdges = clarifyNodes.map<Edge>((n, i) => ({
+              id: `e-${nodeId}-${n.id}`,
+              source: nodeId,
+              target: n.id,
+              data: { linkType: 'info' },
+              sourceHandle: i < clarifyMid ? 'left' : 'rightSource',
+              targetHandle: i < clarifyMid ? 'right' : 'leftTarget',
+              type: 'smoothstep',
+            }));
+
+            const stepNode = nodesUpdated.find((n) => n.id === nodeId)!;
+            const expansionNodes: Node[] = [
+              { ...stepNode, position: pos },
+              ...branchNodes,
+              ...answerNodes,
+              ...clarifyNodes,
+            ];
+            const excludeIds = new Set([nodeId]);
+            const shiftedExisting = pushNodesAwayFromExpansion(
+              nodesUpdated,
+              expansionNodes,
+              excludeIds
+            );
+
+            return {
+              maps: {
+                ...innerState.maps,
+                [innerSid]: {
+                  nodes: [...shiftedExisting, ...branchNodes, ...answerNodes, ...clarifyNodes],
+                  edges: [...innerMap.edges, ...branchEdges, ...answerEdges, ...clarifyEdges],
+                },
+              },
+              selectedNodeId: nodeId,
+              promptLoading: false,
+            };
+          });
+        })
+        .catch(() => set({ promptLoading: false })) as Promise<void>;
+    },
+
     // Expand the selected node using LLM; add branches as 'post' and clarifies as 'info' side nodes
     expandSelectedNodeWithGemini: () =>
       set((state) => {
@@ -294,47 +638,76 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
         const sourceNode = map.nodes.find((n) => n.id === sourceId);
         const contextLabel = (sourceNode?.data as any)?.label ?? (sourceNode?.data as any)?.title ?? 'Idea';
 
-        // Fire async LLM expansion and apply when ready
-        expandNodeWithGemini({ nodeId: sourceId, context: String(contextLabel) }).then(({ branches, clarifies }) => {
+        set({ promptLoading: true });
+        expandNodeWithGemini({ nodeId: sourceId, context: String(contextLabel) }).then(({ branches, answers = [], clarifies }) => {
           set((inner) => {
             const innerSid = inner.selectedId; if (!innerSid) return inner as SessionsState;
             const innerMap = inner.maps[innerSid] ?? { nodes: [], edges: [] };
             const existingIds = new Set(innerMap.nodes.map((n) => n.id));
+            const sx = sourceNode?.position?.x ?? 250;
+            const sy = sourceNode?.position?.y ?? 120;
 
-            // Branch nodes below (post links)
+            // Step nodes below (post links)
             const branchNodes = branches
               .filter((b) => !existingIds.has(b.id))
               .map<Node>((b, idx) => ({
                 id: b.id,
-                position: { x: (sourceNode?.position?.x ?? 250) - 120 + idx * 180, y: (sourceNode?.position?.y ?? 120) + 160 },
-                data: { label: b.label, nodeType: 'step' },
+                position: {
+                  x: sx + LAYOUT.branchOffsetX + idx * LAYOUT.branchSpacingX,
+                  y: sy + LAYOUT.branchDy,
+                },
+                data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'step' },
                 type: 'mind',
                 dragHandle: '.drag-handle',
               }));
+            const stepCount = branchNodes.length;
+            const answerNodes = (answers as Branch[]).filter((b) => !existingIds.has(b.id)).map<Node>((b, idx) => ({
+              id: b.id,
+              position: {
+                x: sx + LAYOUT.branchOffsetX + (stepCount + idx) * LAYOUT.branchSpacingX,
+                y: sy + LAYOUT.branchDy,
+              },
+              data: { label: b.label, ...((b as any).content != null ? { content: (b as any).content } : {}), nodeType: 'answer' },
+              type: 'mind',
+              dragHandle: '.drag-handle',
+            }));
             const branchEdges = branchNodes.map<Edge>((n) => ({
               id: `e-${sourceId}-${n.id}`,
               source: sourceId,
               target: n.id,
               data: { linkType: 'post' },
             }));
+            const answerEdges = answerNodes.map<Edge>((n) => ({
+              id: `e-${sourceId}-${n.id}`,
+              source: sourceId,
+              target: n.id,
+              data: { linkType: 'post' },
+            }));
 
-            // Clarify nodes to the right (info links)
-            const clarifyNodes = clarifies
-              .filter((c) => !existingIds.has(c.id))
-              .map<Node>((c, idx) => ({
+            // Clarify nodes 50/50 left and right (info links)
+            const expandClarifyList = clarifies.filter((c) => !existingIds.has(c.id));
+            const expandClarifyMid = Math.ceil(expandClarifyList.length / 2);
+            const clarifyNodes = expandClarifyList.map<Node>((c, idx) => {
+              const isLeft = idx < expandClarifyMid;
+              const rowIdx = isLeft ? idx : idx - expandClarifyMid;
+              return {
                 id: c.id,
-                position: { x: (sourceNode?.position?.x ?? 250) + 200, y: (sourceNode?.position?.y ?? 120) + (idx * 60) - 30 },
+                position: {
+                  x: sx + (isLeft ? -LAYOUT.infoOffsetX : LAYOUT.infoOffsetX),
+                  y: sy + rowIdx * LAYOUT.infoSpacingY + LAYOUT.infoOffsetY,
+                },
                 data: { label: c.label, nodeType: 'info' },
                 type: 'mind',
                 dragHandle: '.drag-handle',
-              }));
-            const clarifyEdges = clarifyNodes.map<Edge>((n) => ({
+              };
+            });
+            const clarifyEdges = clarifyNodes.map<Edge>((n, i) => ({
               id: `e-${sourceId}-${n.id}`,
               source: sourceId,
               target: n.id,
               data: { linkType: 'info' },
-              sourceHandle: 'right',
-              targetHandle: 'left',
+              sourceHandle: i < expandClarifyMid ? 'left' : 'rightSource',
+              targetHandle: i < expandClarifyMid ? 'right' : 'leftTarget',
               type: 'smoothstep',
             }));
 
@@ -342,13 +715,14 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
               maps: {
                 ...inner.maps,
                 [innerSid]: {
-                  nodes: [...innerMap.nodes, ...branchNodes, ...clarifyNodes],
-                  edges: [...innerMap.edges, ...branchEdges, ...clarifyEdges],
+                  nodes: [...innerMap.nodes, ...branchNodes, ...answerNodes, ...clarifyNodes],
+                  edges: [...innerMap.edges, ...branchEdges, ...answerEdges, ...clarifyEdges],
                 },
               },
+              promptLoading: false,
             };
           });
-        }).catch(() => state as SessionsState);
+        }).catch(() => set({ promptLoading: false }));
         return state as SessionsState;
       }),
   };

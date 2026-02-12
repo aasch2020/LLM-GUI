@@ -1,4 +1,9 @@
 import type { NodeContext, Branch } from './types';
+import { useLlmSettingsStore } from '../store/llmSettingsStore';
+
+/** Default from env. Override at runtime via toggle (useLlmSettingsStore). */
+export const USE_MOCK_LLM_DEFAULT = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_USE_MOCK_LLM === 'true';
+
 /**
  * LLM Client Usage (Gemini)
  *
@@ -34,7 +39,7 @@ export type LlmRequest = {
   model?: string;
   temperature?: number;
   systemPrompt?: string;
-  promptType?: 'init' | 'expand';
+  promptType?: 'init' | 'expand' | 'clarify' | 'answerPath';
 };
 
 /**
@@ -56,7 +61,63 @@ export type LlmRequest = {
  * @param req Request body including `prompt` or `messages`, optional `model` and `temperature`.
  * @returns A promise resolving to `{ text: string }` with the generated content.
  */
+function getMockResponse(promptType?: string): string {
+  switch (promptType) {
+    case 'init':
+      return [
+        '<root><title>Get started</title><content>Refined from your idea</content></root>',
+        '<step><title>First step</title><content>Initial step description.</content></step>',
+        '<step><title>Second step</title><content>Second step description.</content></step>',
+        '<step><title>Third step</title><content>Third step description.</content></step>',
+        '<answer><title>Direct answer</title><content>When confident, a final answer option.</content></answer>',
+        '<clarify>Any constraints or preferences?</clarify>',
+        '<clarify>What’s your timeline?</clarify>',
+      ].join('\n');
+    case 'clarify':
+      return [
+        '<root><title>Refined topic</title><content>With your context applied</content></root>',
+        '<step><title>Option A</title><content>Description for option A.</content></step>',
+        '<step><title>Option B</title><content>Description for option B.</content></step>',
+        '<answer><title>Recommended</title><content>Best fit when sure.</content></answer>',
+        '<clarify>Need more detail?</clarify>',
+      ].join('\n');
+    case 'answerPath':
+      return [
+        '<step><title>Next step A</title><content>Content for first option.</content></step>',
+        '<step><title>Next step B</title><content>Content for second option.</content></step>',
+        '<answer><title>Final answer</title><content>Confident conclusion when applicable.</content></answer>',
+        '<clarify>Need more detail?</clarify>',
+      ].join('\n');
+    case 'expand':
+    default:
+      return [
+        '<step><title>Branch A</title><content>Option A.</content></step>',
+        '<step><title>Branch B</title><content>Option B.</content></step>',
+        '<answer><title>Suggested answer</title><content>When confident.</content></answer>',
+        '<clarify>Would you like more branches or details?</clarify>',
+      ].join('\n');
+  }
+}
+
+function getUseMockLlm(): boolean {
+  try {
+    return useLlmSettingsStore.getState().useMockLlm ?? USE_MOCK_LLM_DEFAULT;
+  } catch {
+    return USE_MOCK_LLM_DEFAULT;
+  }
+}
+
 export async function generateText(req: LlmRequest): Promise<{ text: string }> {
+  const payload = { prompt: req.prompt, messages: req.messages, promptType: req.promptType };
+  const useMock = getUseMockLlm();
+  console.log('[LLM] mode:', useMock ? 'MOCK' : 'REAL API');
+  console.log('[LLM] prompt/request', payload);
+
+  if (useMock) {
+    const text = getMockResponse(req.promptType);
+    console.log('[LLM] response (mock)', text);
+    return Promise.resolve({ text });
+  }
   const res = await fetch('/api/llm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -65,7 +126,9 @@ export async function generateText(req: LlmRequest): Promise<{ text: string }> {
   if (!res.ok) {
     throw new Error(`LLM error: ${res.status}`);
   }
-  return res.json();
+  const data = await res.json();
+  console.log('[LLM] response', data?.text ?? data);
+  return data;
 }
 
 /**
@@ -123,7 +186,7 @@ export default { generateText, streamText };
  * Generates a concise title for a node from its context using Gemini.
  * Returns a short phrase suitable as the node's label/title.
  */
-export type InitializeResult = { title: string; clarifies: Branch[]; branches: Branch[] };
+export type InitializeResult = { title: string; content?: string; clarifies: Branch[]; branches: Branch[]; answers: Branch[] };
 export async function initializeNodeWithGemini(ctx: NodeContext): Promise<InitializeResult> {
   const prompt = `Node Context: ${ctx.context ?? 'None provided'}.`;
   const { text } = await generateText({
@@ -133,11 +196,18 @@ export async function initializeNodeWithGemini(ctx: NodeContext): Promise<Initia
     promptType: 'init',
   });
   const nid = ctx.nodeId || 'node';
-  const branches = parseBranchesFromText(text, nid);
+  let branches = parseStepsFromText(text, nid);
+  let answers = parseFinalAnswersFromText(text, nid);
+  if (branches.length === 0 && answers.length > 0) {
+    branches = parseBranchesFromText(text, nid);
+    answers = [];
+  }
   const clarifies = parseClarifiesFromText(text, nid);
-  const rootTitle = parseRootFromText(text);
-  const title = rootTitle || branches[0]?.label || (text || '').split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) || 'New Node';
-  return { title, clarifies, branches };
+  const rootParsed = parseClarifyRootFromText(text);
+  const fallbackTitle = parseRootFromText(text) || branches[0]?.label || answers[0]?.label || (text || '').split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) || 'New Node';
+  const title = rootParsed.title || fallbackTitle;
+  const content = rootParsed.content;
+  return { title, content, clarifies, branches, answers };
 }
 
 /**
@@ -165,38 +235,113 @@ export async function expandNode(ctx: NodeContext): Promise<Branch[]> {
  * Example usage:
  *   const branches = await expandNodeWithGemini({ nodeId: 'root', context: 'Travel planning' });
  */
-export type ExpandResult = { branches: Branch[]; clarifies: Branch[] };
+export type ExpandResult = { branches: Branch[]; answers: Branch[]; clarifies: Branch[] };
+
+export type AnswerPathContext = {
+  rootTitle: string;
+  rootContent?: string;
+  clarifiers: Array<{ question: string; answer?: string }>;
+  chosenPath: string;
+  userInput: string;
+  nodeId: string;
+};
+
+/**
+ * Expand an answer path: prompt with root, clarifiers, chosen path, and user input;
+ * return next-step branches and optional clarifies.
+ */
+export async function expandAnswerPathWithGemini(ctx: AnswerPathContext): Promise<ExpandResult> {
+  const { rootTitle, rootContent, clarifiers, chosenPath, userInput, nodeId } = ctx;
+  const clarifierLines = clarifiers.length
+    ? clarifiers.map((c) => (c.answer != null ? `Clarifier: ${c.question} → User answer: ${c.answer}` : `Clarifier: ${c.question}`)).join('\n')
+    : '(none)';
+  const prompt = [
+    `Root title: ${rootTitle}`,
+    rootContent ? `Root content: ${rootContent}` : '',
+    `Clarifiers:\n${clarifierLines}`,
+    `Chosen answer path: ${chosenPath}`,
+    `User submitted input: ${userInput}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const { text } = await generateText({
+    prompt,
+    model: 'gemini-flash-latest',
+    temperature: 0.2,
+    promptType: 'answerPath',
+  });
+
+  const nid = nodeId || 'node';
+  let branches = parseStepsFromText(text, nid);
+  let answers = parseFinalAnswersFromText(text, nid);
+  if (branches.length === 0 && answers.length > 0) {
+    branches = parseBranchesFromText(text, nid);
+    answers = [];
+  }
+  const clarifies = parseClarifiesFromText(text, nid);
+  return { branches, answers, clarifies };
+}
+
 export async function expandNodeWithGemini(ctx: NodeContext): Promise<ExpandResult> {
   const prompt = [
     `Node Context: ${ctx.context ?? 'None provided'}.`
   ].join('\n');
-  console.log("calling expand")
   const { text } = await generateText({
     prompt,
     model: 'gemini-flash-latest',
     temperature: 0.2,
     promptType: 'expand',
   });
- 
   const nid = ctx.nodeId || 'node';
-  console.log(text, nid)
-  const branches = parseBranchesFromText(text, nid);
+  let branches = parseStepsFromText(text, nid);
+  let answers = parseFinalAnswersFromText(text, nid);
+  if (branches.length === 0 && answers.length > 0) {
+    branches = parseBranchesFromText(text, nid);
+    answers = [];
+  }
   const clarifies = parseClarifiesFromText(text, nid);
-  return { branches, clarifies };
+  return { branches, answers, clarifies };
 }
 
-function parseBranchesFromText(text: string, nid: string): Branch[] {
-  const labels: string[] = [];
-  // Primary: extract <answer>...</answer> elements (XML per base-systemprompt)
-  const answerRegex = /<answer>([\s\S]*?)<\/answer>/gi;
+/** Parse <step><title>...</title><content>...</content></step> into Branch[] (next-step options). */
+function parseStepsFromText(text: string, nid: string): Branch[] {
+  return parseTagBranches(text, nid, 'step', `${nid}-step`);
+}
+
+/** Parse <answer><title>...</title><content>...</content></answer> into Branch[] (final-answer options). */
+function parseFinalAnswersFromText(text: string, nid: string): Branch[] {
+  return parseTagBranches(text, nid, 'answer', `${nid}-ans`);
+}
+
+function parseTagBranches(text: string, nid: string, tag: string, idPrefix: string): Branch[] {
+  const results: { label: string; content?: string }[] = [];
+  const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'gi');
   let match: RegExpExecArray | null;
-  while ((match = answerRegex.exec(text)) !== null) {
+  while ((match = regex.exec(text)) !== null) {
     const raw = match[1]?.trim() ?? '';
-    if (raw) labels.push(raw);
+    if (!raw) continue;
+    const titleMatch = /<title>([\s\S]*?)<\/title>/i.exec(raw);
+    const contentMatch = /<content>([\s\S]*?)<\/content>/i.exec(raw);
+    const subtitleMatch = /<subtitle>([\s\S]*?)<\/subtitle>/i.exec(raw);
+    const label = (titleMatch?.[1]?.trim() ?? raw.replace(/<[^>]+>/g, '').trim()) || raw;
+    const content = contentMatch?.[1]?.trim() ?? subtitleMatch?.[1]?.trim();
+    results.push({ label, content });
   }
-  console.log("unique is ", labels)
-  const unique = Array.from(new Set(labels)).slice(0, 5);
-  return unique.map((label, i) => ({ id: `${nid}-gen-${i + 1}`, label }));
+  const seen = new Set<string>();
+  const unique = results.filter((r) => {
+    if (seen.has(r.label)) return false;
+    seen.add(r.label);
+    return true;
+  }).slice(0, 6);
+  return unique.map((r, i) => ({ id: `${idPrefix}-${i + 1}`, label: r.label, content: r.content }));
+}
+
+/** Legacy: parse <answer> as branches (steps) for backward compatibility when <step> is absent. */
+function parseBranchesFromText(text: string, nid: string): Branch[] {
+  const fromStep = parseStepsFromText(text, nid);
+  if (fromStep.length > 0) return fromStep;
+  return parseTagBranches(text, nid, 'answer', `${nid}-gen`);
 }
 
 function parseClarifiesFromText(text: string, nid: string): Branch[] {
@@ -217,4 +362,71 @@ function parseRootFromText(text: string): string | null {
   const m = rootRegex.exec(text);
   const raw = m?.[1]?.trim() ?? '';
   return raw || null;
+}
+
+/** Parse <root><title>...</title><content>...</content></root> or plain <root>...</root> */
+function parseClarifyRootFromText(text: string): { title: string; content?: string } {
+  const rootRegex = /<root>([\s\S]*?)<\/root>/i;
+  const m = rootRegex.exec(text);
+  const raw = m?.[1]?.trim() ?? '';
+  if (!raw) return { title: '' };
+  const titleMatch = /<title>([\s\S]*?)<\/title>/i.exec(raw);
+  const contentMatch = /<content>([\s\S]*?)<\/content>/i.exec(raw);
+  const subtitleMatch = /<subtitle>([\s\S]*?)<\/subtitle>/i.exec(raw);
+  const title = (titleMatch?.[1]?.trim() ?? raw.replace(/<[^>]+>/g, '').trim()) || 'Root';
+  const content = contentMatch?.[1]?.trim() ?? subtitleMatch?.[1]?.trim();
+  return { title, content };
+}
+
+export type ClarifyRepromptResult = {
+  title: string;
+  content?: string;
+  branches: Branch[];
+  answers: Branch[];
+  clarifies: Branch[];
+};
+
+/**
+ * Reprompt the root with user clarification: call clarify prompt, then parse
+ * updated root (title/content) and new child branches + clarify nodes.
+ */
+export async function repromptRootWithClarify(params: {
+  rootTitle: string;
+  rootContent?: string;
+  clarifyingQuestion?: string;
+  userAnswer: string;
+}): Promise<ClarifyRepromptResult> {
+  const { rootTitle, rootContent, clarifyingQuestion, userAnswer } = params;
+  const prompt = [
+    `Original root title: ${rootTitle}`,
+    rootContent ? `Original root content: ${rootContent}` : '',
+    clarifyingQuestion ? `Clarifying question: ${clarifyingQuestion}` : 'User provided additional context (no specific question).',
+    `User's answer: ${userAnswer}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const { text } = await generateText({
+    prompt,
+    model: 'gemini-flash-latest',
+    temperature: 0.2,
+    promptType: 'clarify',
+  });
+
+  const rootParsed = parseClarifyRootFromText(text);
+  const nid = 'root';
+  let branches = parseStepsFromText(text, nid);
+  let answers = parseFinalAnswersFromText(text, nid);
+  if (branches.length === 0 && answers.length > 0) {
+    branches = parseBranchesFromText(text, nid);
+    answers = [];
+  }
+  const clarifies = parseClarifiesFromText(text, nid);
+  return {
+    title: rootParsed.title || rootTitle,
+    content: rootParsed.content ?? rootContent,
+    branches,
+    answers,
+    clarifies,
+  };
 }

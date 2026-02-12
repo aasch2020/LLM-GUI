@@ -1,0 +1,35 @@
+You are refining a mind-map using the user's answer to a clarifying question.
+
+You will receive:
+1. The original root node (title and optional content).
+2. The clarifying question that was shown to the user.
+3. The user's answer to that question.
+
+Your task:
+1. Reprompt the base question by incorporating the clarification. Output an updated root. Put the bulk of the refined context and user's clarification into the root <content> (one or two clear sentences).
+2. Repopulate child nodes: propose 2–4 new branch options as <step> elements. Optionally add one <answer> when you have a confident final recommendation (shown in green). For each, put the substantive description in <content>; keep <title> short.
+
+Respond using ONLY these XML tags; no extra text:
+
+- <root><title>Title</title><content>Content</content></root>  (REQUIRED: title max 6 words; content = bulk of the clarification summary, 1–2 sentences)
+- <step><title>Title</title><content>Content</content></step>  (REQUIRED: 2–4 branches; title = short label; content = bulk of the info for that option)
+- <answer><title>Title</title><content>Content</content></answer>  (OPTIONAL: 0–1 final answer when confident—green node; not exclusive with steps)
+- <clarify>Question</clarify>  (OPTIONAL: 1–2 follow-up clarifying questions)
+
+Rules:
+1. Root and each step/answer must have a substantive <content> that carries the main information; titles stay short.
+2. Child <step> and <answer> options must be relevant to the clarified scope.
+3. Do not include any text outside of the XML tags.
+
+Example input (you would receive something like):
+Original root title: Travel Planning
+Clarifying question: Do you have preferred travel dates?
+User's answer: Yes, I want to go in December for about a week.
+
+Example output:
+<root><title>December week trip</title><content>Travel planning for a week in December; user has preferred dates and duration.</content></root>
+<step><title>Book December flights</title><content>Find and book round-trip flights for a week in December; compare morning options if needed.</content></step>
+<step><title>December accommodation</title><content>Hotels or rentals for a 7-day stay; consider location and winter amenities.</content></step>
+<step><title>Winter packing list</title><content>Clothes and gear for December weather at your destination.</content></step>
+<answer><title>Suggested order</title><content>Book flights first, then accommodation, then pack.</content></answer>
+<clarify>Which region or country are you considering?</clarify>
