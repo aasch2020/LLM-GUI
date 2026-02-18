@@ -29,7 +29,7 @@ const MindNode: React.FC<MindNodeProps> = ({ id, data, selected, standalone }) =
   const content = data?.content ?? '';
   const details = data?.details ?? '';
   const hasInput = data?.hasInput ?? true;
-  const inputPlaceholder = data?.inputPlaceholder ?? 'Type notes or ideas…';
+  const inputPlaceholder = data?.inputPlaceholder ?? 'Add Context!';
     // Color variants per node type
     const typeColors: Record<string, { border: string; ring: string; bg: string; handleBg: string }> = {
       default: { bg: 'bg-black', border: 'border-gray-200', ring: 'ring-blue-400', handleBg: 'bg-gray-900' },
@@ -134,7 +134,7 @@ const MindNode: React.FC<MindNodeProps> = ({ id, data, selected, standalone }) =
         {details ? (
           <div className="text-gray-300 text-xs leading-snug">{details}</div>
         ) : null}
-        {hasInput && (
+        {hasInput && nodeType !== 'answer' && (
           <div className="mt-2 flex gap-2 nodrag">
             <input
               type="text"
