@@ -38,10 +38,14 @@ export default function ChatPage() {
     return node?.data?.label ?? selectedNodeId;
   })();
 
+  const rootNode = selectedId ? maps[selectedId]?.nodes?.find((n) => n.id === 'root') : null;
+  const rootTitle = (rootNode?.data as any)?.title ?? (rootNode?.data as any)?.label ?? '';
+  const headingTitle = rootTitle.trim() || 'New Chat:';
+
   return (
     <main className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Chat: {id}</h1>
+        <h1 className="text-2xl font-semibold">{headingTitle}</h1>
         <div className="flex items-center gap-4">
           <StarterField />
         </div>
