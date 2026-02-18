@@ -24,7 +24,7 @@ export default function ChatPage() {
   const maps = useSessionsStore((s) => s.maps);
   const selectedNodeId = useSessionsStore((s) => s.selectedNodeId);
   const promptLoading = useSessionsStore((s) => s.promptLoading);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (id && id !== selectedId) {
@@ -38,22 +38,26 @@ export default function ChatPage() {
     return node?.data?.label ?? selectedNodeId;
   })();
 
+  const rootNode = selectedId ? maps[selectedId]?.nodes?.find((n) => n.id === 'root') : null;
+  const rootTitle = (rootNode?.data as any)?.title ?? (rootNode?.data as any)?.label ?? '';
+  const headingTitle = rootTitle.trim() || 'New Chat:';
+
   return (
     <main className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Chat: {id}</h1>
+        <h1 className="text-2xl font-semibold">{headingTitle}</h1>
         <div className="flex items-center gap-4">
           <StarterField />
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <button
+        {/* <button
           className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-100"
-          onClick={() => setSidebarOpen((v) => !v)}
+          onClick={() => setSidebarOpen((v) => false)}
           aria-pressed={sidebarOpen}
         >
           {sidebarOpen ? 'Hide Sidebar' : 'Show Sidebar'}
-        </button>
+        </button> */}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         {sidebarOpen && (
