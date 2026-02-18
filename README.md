@@ -1,6 +1,6 @@
 ## LLM Setup
 
-- Add your API key: copy `.env.example` to `.env` and set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+- Add your API key: in `.env` and set `GEMINI_API_KEY=<yourkey>` (or `GOOGLE_API_KEY`).
 
 # Mind Map UI (Starter)
 
