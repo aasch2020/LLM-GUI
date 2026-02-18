@@ -44,30 +44,6 @@ export default function ChatPage() {
         <h1 className="text-2xl font-semibold">Chat: {id}</h1>
         <div className="flex items-center gap-4">
           <StarterField />
-          <button
-            className="px-3 py-1.5 text-sm rounded bg-gray-700 text-white hover:bg-gray-800"
-            onClick={() => addPreNode('Pre Node')}
-            disabled={!selectedNodeId}
-          >
-            Add Pre
-          </button>
-          <button
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-            onClick={() => addDemoNode('Post Node')}
-            disabled={!selectedNodeId}
-          >
-            Add Post
-          </button>
-          <button
-            className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
-            onClick={() => addInfoNode('Info Node')}
-            disabled={!selectedNodeId}
-          >
-            Add Info
-          </button>
-          <span className="text-xs text-gray-600">
-            {selectedLabel ? `Selected: ${selectedLabel}` : 'Select a node to add links'}
-          </span>
         </div>
       </div>
       <div className="flex items-center gap-2">
