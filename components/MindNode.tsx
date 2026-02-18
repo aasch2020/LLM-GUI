@@ -134,7 +134,7 @@ const MindNode: React.FC<MindNodeProps> = ({ id, data, selected, standalone }) =
         {details ? (
           <div className="text-gray-300 text-xs leading-snug">{details}</div>
         ) : null}
-        {hasInput && (
+        {hasInput && nodeType !== 'answer' && (
           <div className="mt-2 flex gap-2 nodrag">
             <input
               type="text"
